@@ -7,6 +7,7 @@ import scipy.sparse.linalg
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import ortho_group
 from scipy.linalg import orth
+import time
 
 
 def prod(n: np.ndarray):
@@ -88,6 +89,8 @@ def ttr1svd(tensor: np.ndarray, R=None):
     svdsuperlevel = np.zeros_like(r)
     svdsuperlevel[0] = 1
     for i in range(1, len(r)):
+        # print(i)
+        # print(r)
         svdsuperlevel[i] = prod(r[:i])
         totalsvd = totalsvd + svdsuperlevel[i]
     nleaf = prod(r)
@@ -101,9 +104,9 @@ def ttr1svd(tensor: np.ndarray, R=None):
     # print(St.shape)#(20,)
     # print(Vt.shape)#(20,400)
     # print('-----------')
-    Ut = Ut[:, :R]#原来是
+    Ut = Ut[:, :R]  # 原来是
     St = St[:R]
-    Vt = Vt[:R, :]#取前R个
+    Vt = Vt[:R, :]  # 取前R个
     Vt = Vt.T
     # print('-----------')
     # print(Ut.shape)#(20, 5)
@@ -111,7 +114,7 @@ def ttr1svd(tensor: np.ndarray, R=None):
     # print(Vt.shape)#(400, 5)
     # print('-----------')
     U.append(Ut)
-    S.append(St.reshape((-1, 1)))#变成列向量
+    S.append(St.reshape((-1, 1)))  # 变成列向量
     V.append(Vt)
     counter = 1
     whichcounter = 0
@@ -156,20 +159,23 @@ def ttr1svd(tensor: np.ndarray, R=None):
     return U, S, V, sigmas
 
 
-def ttr1(tensor: np.ndarray):
-    shape = np.shape(tensor)
-    svd_r = [shape[0], min(shape[1], shape[2])]
-    U_i = []
-    U_ij = []
-    V_ij = []
-    sig_i = []
-    sig_ij = []
-    A = np.reshape(tensor, [svd_r[0], -1])
-    U, S, V = np.linalg.svd(A, full_matrices=False)
-    pass
+def compress_hcs(tensor, mode_matrices, block_dim):
+    S, U, V, W = mode_matrices
+    tensor = S * tensor
+    L = U.shape[1]
+    M = V.shape[1]
+    N = W.shape[1]
+    B_I = block_dim[0]
+    B_J = block_dim[1]
+    B_K = block_dim[2]
+    G1 = np.reshape(tensor, newshape=[B_I, B_J * B_K])
+    G2 = np.reshape(U.T.__matmul__(G1), newshape=[L * B_J, B_K]).T
+    G3 = np.reshape(W.T.__matmul__(G2), newshape=[L * N, B_J]).T
+    G4 = np.reshape(V.T.__matmul__(G3), newshape=[M * N, L]).T
+    return np.reshape(G4, newshape=[L, M, N])
 
 
-def HCS(T, sketch_dim, return_s_atom=False, return_h_atom=False):
+def HCS(T, sketch_dim, return_s_atom=False, return_h_atom=False, S_common=None, so_list=None, ho_list=None):
     l = len(np.shape(T))
     assert len(sketch_dim) == l
     nk_list = list(np.shape(T))
@@ -180,9 +186,14 @@ def HCS(T, sketch_dim, return_s_atom=False, return_h_atom=False):
         nk = nk_list[k]
         mk = sketch_dim[k]
         hk = np.random.randint(low=0, high=mk, size=nk)
+        if S_common:
+            hk[:S_common] = ho_list[k][:S_common]
         sk = np.random.normal(size=[nk, 1])
+        if S_common:
+            sk[:S_common] = so_list[k][:S_common]
         sk = np.sign(sk)
-        Hk = np.zeros(shape=[nk, mk])
+        Hk = np.zeros(shape=[nk, mk])  # (I,L)
+
         x = np.arange(nk)
         # print(x)
         y = hk[x]
@@ -207,40 +218,28 @@ def HCS(T, sketch_dim, return_s_atom=False, return_h_atom=False):
     return ans
 
 
-def compress_ff(tensor, compression_matrices):
-    shape = list(tensor.shape)
-    A = unfold(tensor, 0)
-    A = compression_matrices[0] @ A
-    shape[0] = A.shape[0]
-    A = fold(A, 0, shape)
-
-    A = unfold(tensor, 1)
-    A = compression_matrices[1] @ A
-    shape[1] = A.shape[0]
-    A = fold(A, 1, shape)
-
-    A = unfold(tensor, 2)
-    A = compression_matrices[2] @ A
-    shape[2] = A.shape[0]
-    A = fold(A, 2, shape)
-
-    return A
-
-
-def compress(tensor, modematrices):
-    U, V, W = modematrices
-    I, J, K = tensor.shape
-    L = U.shape[1]
-    M = V.shape[1]
-    N = W.shape[1]
-    G1 = np.reshape(tensor, newshape=[I, J * K])
-    G2 = np.reshape(U.T.__matmul__(G1), newshape=[L * J, K]).T
-    G3 = np.reshape(W.T.__matmul__(G2), newshape=[L * N, J]).T
-    G4 = np.reshape(V.T.__matmul__(G3), newshape=[M * N, L]).T
-    return np.reshape(G4, newshape=[L, M, N])
+def generate_HCS(dim, sketch_dim):
+    l = len(dim)
+    assert len(sketch_dim) == l
+    nk_list = dim
+    Hk_list = []
+    sk_list = []
+    for k in range(len(nk_list)):
+        nk = nk_list[k]
+        mk = sketch_dim[k]
+        hk = np.random.randint(low=0, high=mk, size=nk)
+        sk = np.random.normal(size=[nk, 1])
+        sk = np.sign(sk)
+        Hk = np.zeros(shape=[nk, mk])  # (I,L)
+        x = np.arange(nk)
+        y = hk[x]
+        Hk[x, y] = 1
+        Hk_list.append(Hk)
+        sk_list.append(sk)
+    return Hk_list, sk_list
 
 
-def form_mm_ttr1(U, V, Sigmas, size, index=None):
+def form_mm_ttr1(U, V, Sigmas, size, index=None, mul_col=True):
     I, J, K = size
     modeA = np.zeros(shape=[I, 1])
     modeB = np.zeros(shape=[J, 1])
@@ -255,12 +254,15 @@ def form_mm_ttr1(U, V, Sigmas, size, index=None):
     modeA = modeA[:, 1:]
     modeB = modeB[:, 1:]
     modeC = modeC[:, 1:]
-    if index is not None:
-        modeA = modeA[:, index]
-        modeB = modeB[:, index]
-        modeC = modeC[:, index]
-    for col in range(modeA.shape[1]):
-        modeA[:, col] *= Sigmas[col]
+    Sigmas = np.array(Sigmas).reshape(-1)
+    sort_sigmas_index = np.argsort(Sigmas)[::-1]
+    sort_sigmas = Sigmas[sort_sigmas_index]
+    modeA = modeA[:, sort_sigmas_index]
+    modeB = modeB[:, sort_sigmas_index]
+    modeC = modeC[:, sort_sigmas_index]
+    if mul_col is True:
+        for col in range(modeA.shape[1]):
+            modeA[:, col] *= sort_sigmas[col]
     return modeA, modeB, modeC
 
 
@@ -274,7 +276,7 @@ def permColmatch(iA, dA):
     iA = np.array(iA)
     dA = np.array(dA)
     pre = iA.T @ dA
-    # print("permColmatch before trace:{}".format(np.trace(pre)))
+    print("permColmatch before norm:{}".format(norm(iA - dA)))
     cost = np.max(pre) - pre
     LAProw, LAPcol = linear_sum_assignment(cost)
     _, F = iA.shape
@@ -302,182 +304,247 @@ def drawRandomMatrices(A, L, iter=5, tol=1e-10):
     # Q, _ = scipy.linalg.qr(A @ Q, mode='economic')
     return Q
 
-def juge_zhengjiao(Q, estA, estB, estC):
-    '''
-    :param mergeA:新的A波浪线
-    :param Q: 原来的
-    :return: 筛选添加之后的矩阵
-    '''
-    #result = []
-    A = estA.T
-    B = estB.T
-    C = estC.T
-    #print('A.T.shape', A.shape)#(25, 100)
-    #print('Q.shape', Q.shape)#(1, 100)
-    sui = 0
-    alli=0
-    for i in range(A.shape[0]):
-        type = 0
-        #rint('A[0]:', A[0])
-        #print('Q', Q)
-        #print('Q[0]', Q[0])
-        #print('Q[1]', Q[1])
-        #print('Q[2]', Q[2])
-        if(((A[i] @ Q[0])**2).sum() < 1e-5 or ((B[i] @ Q[1])**2).sum() < 1e-5 or ((C[i] @ Q[2])**2).sum() < 1e-5):
-            #result.append(mergeA)
-            #print('A[i]', A[i])
-            #print('B[i]', B[i])
-            #print('C[i]', C[i])
-            if ((A[i] @ Q[0])**2).sum() < 1e-5:
-                type=1
-            elif ((B[i] @ Q[0])**2).sum() < 1e-5:
-                type=2
-            elif ((C[i] @ Q[0])**2).sum() < 1e-5:
-                type=3
-            alli+=1
-            if ((type==1 and ((A[i]**2).sum())**0.5 > 1e-3) or (type==2 and ((B[i]**2).sum())**0.5 > 1e-3) or (type==3 and ((C[i]**2).sum())**0.5 > 1e-3)):
-                sui+=1
-                Q[0] = np.column_stack([Q[0], A[i].T])
-                Q[1] = np.column_stack([Q[1], B[i].T])
-                Q[2] = np.column_stack([Q[2], C[i].T])
-    #print(Q.shape)
-    print('alli:', alli)
-    print('sui:', sui)
-    return Q
+
+def DeHCS(HCS_Y, Hk_list, sk_list, i):
+    H = Hk_list[i]
+    # print('H.shape', H.shape)
+    # print('HCS_Y.shape', HCS_Y.shape)
+    HCS_Y = H @ HCS_Y
+    # HCS_Y = HCS_Y * sk_list[i]
+    for j in range(sk_list[i].shape[0]):
+        for k in range(HCS_Y.shape[1]):
+            HCS_Y[j][k] *= sk_list[i][j]
+    return HCS_Y
+
+
+"""
+P:2000
+I:100
+L:10
+Block_size:50
+error:0.7984724577428853
+times:11.422080755233765 secs
+
+P:4000
+I:100
+L:10
+Block_size:50
+error:0.5681741426015549
+times:23.502922534942627 secs
+
+P:6000
+I:100
+L:10
+Block_size:50
+error:0.46474483055522703
+times:28.200517892837524 secs
+
+P:8000
+I:100
+L:10
+Block_size:50
+error:0.4026188786580816
+times:37.252630949020386 secs
+
+P:10000
+I:100
+L:10
+Block_size:50
+error:0.35803015442331193
+times:43.60045766830444 secs
+
+P:12000
+I:100
+L:10
+Block_size:50
+error:0.3283162475210547
+times:62.27067494392395 secs
+
+P:14000
+I:100
+L:10
+Block_size:50
+error:0.3018316880036839
+times:62.09387731552124 secs
+
+P:16000
+I:100
+L:10
+Block_size:50
+error:0.2828270856873273
+times:68.0651228427887 secs
+
+P:18000
+I:100
+L:10
+Block_size:50
+error:0.2673959276538337
+times:83.05286407470703 secs
+
+P:20000
+I:100
+L:10
+Block_size:50
+error:0.25422445336221294
+times:91.0388994216919 secs
+
+P:22000
+I:100
+L:10
+Block_size:50
+error:0.24261067507352246
+times:98.4898247718811 secs
+
+P:24000
+I:100
+L:10
+Block_size:50
+error:0.23122357361565066
+times:105.15047907829285 secs
+
+P:26000
+I:100
+L:10
+Block_size:50
+error:0.22309691542229307
+times:122.03778147697449 secs
+
+P:28000
+I:100
+L:10
+Block_size:50
+error:0.21440451912279862
+times:118.33251905441284 secs
+
+
+
+P:30000
+I:100
+L:10
+Block_size:50
+error:0.20759615612224377
+times:136.61985659599304 secs
+
+"""
+
+"""
+P:2000
+I:100
+L:5
+Block_size:50
+error:0.32302554064070876
+times:13.596962213516235 secs
+
+P:4000
+I:100
+L:5
+Block_size:50
+error:0.2280368003461815
+times:28.598660945892334 secs
+
+
+"""
 
 if __name__ == "__main__":
     # I = J = K = 10
     I = 100
     J = 100
     K = 100
-    R = max(I, J, K) // 20
+    # R = max(I, J, K) // 20
+    R = 1
     creatA = np.random.normal(size=[I, R])
     creatB = np.random.normal(size=[J, R])
     creatC = np.random.normal(size=[K, R])
     creatA = orth(creatA)
     creatB = orth(creatB)
-    craetC = orth(creatC)
-    tensor = kruskal_to_tensor([creatA, creatB, creatC])
-    U, S, V, sigmas = ttr1svd(tensor, R=R)
+    creatC = orth(creatC)
 
-    true_sigmas = sigmas
-    nleaf = I * min(J, K)
-    leaf = []
-    modeA = np.zeros(shape=[I, 1])
-    modeB = np.zeros(shape=[J, 1])
-    modeC = np.zeros(shape=[K, 1])
-    for i in range(R):
-        for j in range(R):
-            tmp = [np.reshape(U[0][:, i], [-1, 1]), np.reshape(U[i + 1][:, j], [-1, 1]),
-                   np.reshape(V[i + 1][:, j], [-1, 1])]
-            modeA = np.column_stack([modeA, tmp[0]])
-            modeB = np.column_stack([modeB, tmp[1]])
-            modeC = np.column_stack([modeC, tmp[2]])
-            # modeA.append(U[0][:, i])
-            # modeB.append(U[i + 1][:, j])
-            # modeC.append(V[i + 1][:, j])
-            leaf.append(tmp)
-    modeA = modeA[:, 1:]
-    modeB = modeB[:, 1:]
-    modeC = modeC[:, 1:]
-    print(modeA.shape)
-    print(modeB.shape)
-    print(modeC.shape)
-    for col in range(modeA.shape[1]):
-        modeA[:, col] *= sigmas[col]
-    estTensor = kruskal_to_tensor([modeA, modeB, modeC])
-    est = 0
-    for i, node in enumerate(leaf):
-        est += sigmas[i] * kruskal_to_tensor(node)
-    print('vec est norm:{}'.format(norm(est - tensor) / norm(tensor)))
-    print('mat est norm:{}'.format(norm(estTensor - tensor) / norm(tensor)))
-    # exit()
     L = I // 5
     M = J // 5
     N = K // 5
-    P = 50
-    mergeA = 0
-    mergeB = 0
-    mergeC = 0
-    compress_sigmas = []
-    hash_eigvalue = []
-    max_iters_random = 5
-    svd_random_tol = 1e-10
-    choose_k = int(L * min(M, N) // 1)
-    #QA = np.zeros([I, 1])
-    #QB = np.zeros([J, 1])
-    #QC = np.zeros([K, 1])
-    #Q = np.zeros([[I,1], [J,1], [K,1]])
-    Q = [np.zeros([I, 1]), np.zeros([J, 1]), np.zeros([K, 1])]
-    for p in range(P):
-        # U = np.random.normal(size=[I, L])
-        # V = np.random.normal(size=[J, M])
-        # W = np.random.normal(size=[K, N])
-        # print(U.shape)
-        U = drawRandomMatrices(np.eye(I), L, iter=max_iters_random, tol=svd_random_tol)
-        V = drawRandomMatrices(np.eye(J), M, iter=max_iters_random, tol=svd_random_tol)
-        W = drawRandomMatrices(np.eye(K), N, iter=max_iters_random, tol=svd_random_tol)
-        # print(U.shape)
-        Y = compress(tensor, [U, V, W])
-        Ut, St, Vt, sigmast = ttr1svd(Y, R)
-        sigmast = np.reshape(sigmast, -1)
-        # sigmast_index = np.argsort(sigmast)[::-1][:choose_k]
-        # sigmast = sigmas[np.where(sigmast < 1e-4)]
-        # sigmast = list(sigmast[sigmast_index])
-        compress_sigmas.extend(list(np.reshape(sigmast, -1)))
-        # print(sigmast.reshape(-1))
-        # print(true_sigmas.reshape(-1))
-        modeAt, modeBt, modeCt = form_mm_ttr1(Ut, Vt, sigmast, [L, M, N])##TTr1分解
-        est_compY = kruskal_to_tensor([modeAt, modeBt, modeCt])
-        print('compress Y reconstruct norm:{}'.format(norm(est_compY - Y)))
-        #print('modeAt.shape', modeAt.shape)#(20, 25)
-        #print('modeBt.shape', modeBt.shape)#(20, 25)
-        #print('est_compy.shape', est_compY.shape)#(20, 20, 20)
-        #print('U.shape', U.shape)#(100, 20)
-        estA = U @ modeAt#A波浪线
-        #print('estA.shape', estA.shape)
-        estB = V @ modeBt
-        estC = W @ modeCt
-        #QA=juge_zhengjiao(estA, QA)#estA(100, 25)
-        #QB=juge_zhengjiao(estB, QB)
-        #QC=juge_zhengjiao(estC, QC)
-        Q = juge_zhengjiao(Q, estA, estB, estC)
-        print('QA.shape', Q[0].shape)
+    # P = 30000
+    P = 4000
 
-    print('QA_shape', Q[0].shape)
-    Q[0] = Q[0][:, 1:]
-    Q[1] = Q[1][:, 1:]
-    Q[2] = Q[2][:, 1:]
-    #print('QB_shape', QB.shape)
-    #print('QC_shape', QC.shape)
-    hash_eigvalue_argsort = np.argsort(hash_eigvalue)
-    maxK = 0
-    # max_index = hash_eigvalue_argsort[-maxK:]
-    #QA = QA[1:]
-    #QB = QB[1:]
-    #QC = QC[1:]
-    #est_tt_tensor = kruskal_to_tensor([mergeA, mergeB, mergeC])
-    est_tt_tensor = kruskal_to_tensor([Q[0], Q[1], Q[2]])
-    print(Q[0].shape)
-    print(Q[1].shape)
-    print(Q[2].shape)
-    print(est_tt_tensor.shape)
-    print('hi')
-    print('compress norm:{}'.format(norm(est_tt_tensor - tensor) / norm(tensor)))
-    # print(norm(modeA))
-    # print(norm(mergeA))
-    # print(norm(modeB))
-    # print(norm(mergeB))
-    # print(norm(modeC))
-    # print(norm(mergeC))
-    compress_sigmas = list(set(compress_sigmas))
-    true_sigmas = list(set(list(true_sigmas.reshape(-1))))
-    hash_eigvalue = list(set(hash_eigvalue))
-    compress_sigmas.sort()
-    true_sigmas.sort()
-    hash_eigvalue.sort()
-    # print(np.array(compress_sigmas)[max_index])
-    # print(true_sigmas)
-    # print(len(true_sigmas))
-    # print(np.array(hash_eigvalue)[max_index])
-    # print(norm(mergeC[:, 0]))
+    block_i = 50
+    block_j = 50
+    block_j = 50
+    block_k = 50
+
+    n_i = I // block_i
+    n_j = J // block_j
+    n_k = K // block_k
+
+    block_dim = [block_i, block_j, block_k]
+
+    est_A_list = []
+    est_B_list = []
+    est_C_list = []
+    all_t = 0.
+    #print('hello')
+    for p in range(P):
+        Hk_list, sk_list = generate_HCS([I, J, K], [L, M, N])
+        sub_hcs_tensor = np.zeros(shape=[L, M, N])
+        for i in range(n_i):
+            for j in range(n_j):
+                for k in range(n_k):
+                    mode_a = creatA[i * block_i:(i + 1) * block_i, :]
+                    mode_b = creatB[j * block_j:(j + 1) * block_j, :]
+                    mode_c = creatC[k * block_k:(k + 1) * block_k, :]
+                    sub_tensor = kruskal_to_tensor([mode_a, mode_b, mode_c])
+                    start1 = time.time()
+                    mode_si = sk_list[0][i * block_i:(i + 1) * block_i]
+                    mode_sj = sk_list[1][j * block_j:(j + 1) * block_j]
+                    mode_sk = sk_list[2][k * block_k:(k + 1) * block_k]
+                    sub_S = kruskal_to_tensor([mode_si, mode_sj, mode_sk])
+                    mode_hi = Hk_list[0][i * block_i:(i + 1) * block_i, :]
+                    mode_hj = Hk_list[1][j * block_j:(j + 1) * block_j, :]
+                    mode_hk = Hk_list[2][k * block_k:(k + 1) * block_k, :]
+                    sub_hcs_tensor += compress_hcs(sub_tensor, [sub_S, mode_hi, mode_hj, mode_hk], block_dim)
+                    end1 = time.time()
+                    all_t+=end1-start1
+        start2 = time.time()
+        Ut, St, Vt, sigmast = ttr1svd(sub_hcs_tensor, R)  # Ut,St,Vt,sigmast = ttr1svd(Y,R)
+
+        sigmast = np.reshape(sigmast, -1)
+
+        modeAt, modeBt, modeCt = form_mm_ttr1(Ut, Vt, sigmast, [L, M, N], mul_col=True)
+        # print('check:{}'.format(norm(sub_hcs_tensor-kruskal_to_tensor([modeAt,modeBt,modeCt]))))
+        modeAt = Hk_list[0] @ modeAt
+        modeBt = Hk_list[1] @ modeBt
+        modeCt = Hk_list[2] @ modeCt
+        sa = np.column_stack([sk_list[0] for ttt in range(modeAt.shape[1])])
+        sb = np.column_stack([sk_list[1] for ttt in range(modeBt.shape[1])])
+        sc = np.column_stack([sk_list[2] for ttt in range(modeCt.shape[1])])
+        #sa = sa.T
+        #sb = sb.T
+        #sc = sc.T
+        estAt = sa * modeAt
+        estBt = sb * modeBt
+        estCt = sc * modeCt
+        end2 = time.time()
+        all_t += end2-start2
+        est_A_list.append(estAt)
+        est_B_list.append(estBt)
+        est_C_list.append(estCt)
+        if (p+1)% 100 ==0:
+            print(p+1)
+    diff = 0.
+    all = 0.
+    est_block = np.zeros(shape=[block_i, block_j, block_k])
+    for i in range(n_i):
+        for j in range(n_j):
+            for k in range(n_k):
+                est_block[:, :, :] = 0
+                for p in range(P):
+                    mode_est_a = est_A_list[p][i * block_i:(i + 1) * block_i, :]
+                    mode_est_b = est_B_list[p][j * block_j:(j + 1) * block_j, :]
+                    mode_est_c = est_C_list[p][k * block_k:(k + 1) * block_k, :]
+                    est_block += (1 / P) * kruskal_to_tensor([mode_est_a, mode_est_b, mode_est_c])
+                mode_a = creatA[i * block_i:(i + 1) * block_i, :]
+                mode_b = creatB[j * block_j:(j + 1) * block_j, :]
+                mode_c = creatC[k * block_k:(k + 1) * block_k, :]
+                block = kruskal_to_tensor([mode_a, mode_b, mode_c])
+                diff += np.sum((block - est_block) ** 2)
+                all += np.sum(block ** 2)
+    print('diff norm:{}'.format(np.sqrt(diff) / np.sqrt(all)))
+    print('times:', all_t, 'secs')
