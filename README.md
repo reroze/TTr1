@@ -24,10 +24,10 @@ Python 3.7  with Numpy and Pycuda
 
 ## Citation  
 If you find Parallel TTr1-Tensor useful in your research, please consider citing:  
-@article{Zhang2020parallelttr1,
-    Author = {Zeliang Zhang, Junzhe Zhang, Guoping Lin, Zeyuan Yin, Kun He},
-    Title = {Parallel TTr1-Tensor: Randomized Compression-based Scheme for Tensor Train Rank-1 Decomposition},
-    Journal = {QTML workshop on NIPS2020},
-    Year = {2020}
-}   
+@article{Zhang2020parallelttr1,  
+    Author = {Zeliang Zhang, Junzhe Zhang, Guoping Lin, Zeyuan Yin, Kun He},  
+    Title = {Parallel TTr1-Tensor: Randomized Compression-based Scheme for Tensor Train Rank-1 Decomposition},  
+    Journal = {QTML workshop on NIPS2020},   
+    Year = {2020}   
+}     
 Our paper can be accessed online from https://tensorworkshop.github.io/NeurIPS2020/accepted_papers.html  
